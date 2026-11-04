@@ -1,0 +1,63 @@
+# Supply Chain Data Governance & Supplier SLA Chargeback Policy
+version: "2024.2"
+owner_team: "supply-chain-data-platform"
+
+systems_of_record:
+  procurement_erp:
+    dataset: "scm_sap_s4_mm"
+    authoritative_tables:
+      - "scm_sap_s4_mm.sap_s4_mm_vendors"
+      - "scm_sap_s4_mm.sap_s4_mm_purchase_orders"
+      - "scm_sap_s4_mm.sap_s4_mm_po_lines"
+      - "scm_sap_s4_mm.sap_s4_mm_store_replenishment_orders"
+  warehouse_wms:
+    dataset: "scm_manh_wmos"
+    authoritative_tables:
+      - "scm_manh_wmos.manh_wmos_products"
+      - "scm_manh_wmos.manh_wmos_inbound_receipts"
+      - "scm_manh_wmos.manh_wmos_putaway_tasks"
+      - "scm_manh_wmos.manh_wmos_inventory_ledgers"
+      - "scm_manh_wmos.manh_wmos_shipments"
+
+deprecated_shadow_tables:
+  - table: "scm_sap_s4_mm.sap_s4_mm_bookings"
+    status: "DEPRECATED_DO_NOT_QUERY"
+    reason: >
+      Pre-receipt provisional EDI booking feed that retains CANCELLED purchase orders
+      and inflates pre-amendment booked_qty / booked_amount_usd by ~12%. Never use
+      for PO spend, vendor volume, or OTIF calculations.
+    use_instead:
+      - "scm_sap_s4_mm.sap_s4_mm_purchase_orders"
+      - "scm_sap_s4_mm.sap_s4_mm_po_lines"
+  - table: "scm_manh_wmos.manh_wmos_consignments"
+    status: "DEPRECATED_DO_NOT_QUERY"
+    reason: >
+      Raw advance-ship-notice (ASN) dock log captured prior to physical receiving QA,
+      ignoring short shipments, arrival delays, and quarantine/rejected pallets.
+      Never use for receiving accuracy, Clean Receipt Rate, or vendor OTIF.
+    use_instead:
+      - "scm_manh_wmos.manh_wmos_inbound_receipts"
+
+vendor_otif_sla_chargeback_policy:
+  metric: "vendor_otif_tier1_pct"
+  eligible_vendor_tier: "TIER_1"
+  active_vendors_only: true
+  exclude_po_statuses:
+    - "CANCELLED"
+  line_in_full_threshold_ratio: 0.98
+  min_period_spend_usd: 50000.00
+  exemption_note: >
+    Tier-1 suppliers whose total closed PO spend in the evaluation period is strictly
+    below $50,000.00 USD are exempt from OTIF SLA chargebacks ($0.00 penalty) regardless
+    of their OTIF percentage. Tier-2 regional vendors (`vendor_tier = 'TIER_2'`) are
+    also exempt from the Tier-1 chargeback schedule.
+  penalty_tiers:
+    - band: "CRITICAL_NON_COMPLIANCE"
+      condition: "vendor_otif_tier1_pct < 85.0"
+      chargeback_pct_of_po_spend: 5.0
+    - band: "WARNING_BELOW_TARGET"
+      condition: "vendor_otif_tier1_pct >= 85.0 AND vendor_otif_tier1_pct < 95.0"
+      chargeback_pct_of_po_spend: 2.0
+    - band: "COMPLIANT"
+      condition: "vendor_otif_tier1_pct >= 95.0"
+      chargeback_pct_of_po_spend: 0.0

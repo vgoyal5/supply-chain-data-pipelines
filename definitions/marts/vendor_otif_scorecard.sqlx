@@ -1,0 +1,158 @@
+config {
+  type: "table",
+  schema: "scm_analytics_marts",
+  name: "vendor_otif_scorecard",
+  description: "Canonical Tier-1 Vendor OTIF, SLA chargeback exposure, and DC un-putaway dock backlog mart.",
+  tags: ["supply_chain", "procurement", "wmos", "sla"]
+}
+
+/*
+ * CROSS-SYSTEM JOIN BRIDGE (MANDATORY):
+ *   SAP S/4HANA `scm_sap_s4_mm.sap_s4_mm_po_lines.sku_id` stores ERP SKU codes (e.g. 'SKU-10001'),
+ *   whereas Manhattan WMOS `scm_manh_wmos.manh_wmos_inbound_receipts.item_nbr` stores warehouse
+ *   item numbers (e.g. 'ITM-50001'). Joining `sku_id = item_nbr` directly returns ZERO rows!
+ *   Always bridge through `scm_manh_wmos.manh_wmos_products` (camelCase columns):
+ *     sap_s4_mm_po_lines.sku_id = manh_wmos_products.skuId
+ *     AND manh_wmos_products.itemNbr = manh_wmos_inbound_receipts.item_nbr
+ *     AND sap_s4_mm_po_lines.po_number = manh_wmos_inbound_receipts.po_number
+ *
+ * TIER-1 VENDOR OTIF DEFINITION (`vendor_otif_tier1_pct`):
+ *   - Scope: `sap_s4_mm_vendors.vendor_tier = 'TIER_1'` AND `active_flag = TRUE`,
+ *     and `sap_s4_mm_purchase_orders.po_status != 'CANCELLED'` (strictly exclude cancelled POs;
+ *     NEVER read provisional decoy table `scm_sap_s4_mm.sap_s4_mm_bookings` or `scm_manh_wmos.manh_wmos_consignments`).
+ *   - A PO is On-Time In-Full (OTIF = 1) if and only if EVERY line on the PO satisfies BOTH:
+ *       1. In-Full: accepted deduplicated eaches (`received_eaches`, after `/ 100.0` pre-2024-03-25
+ *          conversion and `status IN ('received', 'putaway_completed')`) >= 0.98 * `ordered_qty` (98% line fill threshold).
+ *       2. On-Time: latest accepted receipt date `DATE(received_at) <= expected_delivery_date`.
+ *   - `vendor_otif_tier1_pct = ROUND(100.0 * COUNTIF(po_is_otif) / NULLIF(COUNT(*), 0), 2)`.
+ *
+ * UN-PUTAWAY DOCK BACKLOG (`unputaway_dock_backlog_units`):
+ *   - For accepted deduplicated receipts, `GREATEST(net_good_received_eaches - COALESCE(completed_putaway_qty, 0), 0)`
+ *     where `completed_putaway_qty` sums `manh_wmos_putaway_tasks.putaway_qty` ONLY for `status = 'Completed'`
+ *     (tasks in `In_Progress` or `Cancelled` still sit on the receiving dock).
+ */
+
+WITH deduped_accepted_receipts AS (
+  SELECT
+    r.receipt_id,
+    r.po_number,
+    r.item_nbr,
+    r.dc_id,
+    CASE
+      WHEN DATE(r.received_at) < DATE '2024-03-25' THEN r.received_qty / 100.0
+      ELSE r.received_qty
+    END AS received_eaches,
+    CASE
+      WHEN DATE(r.received_at) < DATE '2024-03-25' THEN r.damaged_qty / 100.0
+      ELSE r.damaged_qty
+    END AS damaged_eaches,
+    DATE(r.received_at) AS received_date,
+    r.status
+  FROM `scm_manh_wmos.manh_wmos_inbound_receipts` AS r
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY r.receipt_id ORDER BY r.received_at DESC) = 1
+),
+completed_putaway AS (
+  SELECT
+    pt.receipt_id,
+    SUM(pt.putaway_qty) AS completed_putaway_qty
+  FROM `scm_manh_wmos.manh_wmos_putaway_tasks` AS pt
+  WHERE pt.status = 'Completed'
+  GROUP BY pt.receipt_id
+),
+receipt_line_rollup AS (
+  SELECT
+    ar.po_number,
+    ar.item_nbr,
+    SUM(ar.received_eaches) AS accepted_received_eaches,
+    SUM(ar.damaged_eaches) AS accepted_damaged_eaches,
+    MAX(ar.received_date) AS last_received_date,
+    SUM(
+      GREATEST(
+        (ar.received_eaches - ar.damaged_eaches) - COALESCE(cp.completed_putaway_qty, 0),
+        0.0
+      )
+    ) AS unputaway_dock_backlog_units
+  FROM deduped_accepted_receipts AS ar
+  LEFT JOIN completed_putaway AS cp
+    ON ar.receipt_id = cp.receipt_id
+  WHERE ar.status IN ('received', 'putaway_completed')
+  GROUP BY ar.po_number, ar.item_nbr
+),
+po_line_eval AS (
+  SELECT
+    po.po_number,
+    po.vendor_id,
+    po.dc_id,
+    po.ordered_date,
+    po.expected_delivery_date,
+    pol.po_line_id,
+    pol.sku_id,
+    prod.itemNbr AS wmos_item_nbr,
+    pol.ordered_qty,
+    pol.ordered_qty * pol.unit_cost_usd AS po_line_spend_usd,
+    COALESCE(rl.accepted_received_eaches, 0.0) AS accepted_received_eaches,
+    COALESCE(rl.unputaway_dock_backlog_units, 0.0) AS unputaway_dock_backlog_units,
+    rl.last_received_date,
+    (
+      COALESCE(rl.accepted_received_eaches, 0.0) >= 0.98 * pol.ordered_qty
+      AND rl.last_received_date IS NOT NULL
+      AND rl.last_received_date <= po.expected_delivery_date
+    ) AS line_is_otif
+  FROM `scm_sap_s4_mm.sap_s4_mm_purchase_orders` AS po
+  INNER JOIN `scm_sap_s4_mm.sap_s4_mm_po_lines` AS pol
+    ON po.po_number = pol.po_number
+  INNER JOIN `scm_manh_wmos.manh_wmos_products` AS prod
+    ON pol.sku_id = prod.skuId
+  LEFT JOIN receipt_line_rollup AS rl
+    ON po.po_number = rl.po_number
+    AND prod.itemNbr = rl.item_nbr
+  WHERE po.po_status != 'CANCELLED'
+),
+po_eval AS (
+  SELECT
+    vendor_id,
+    po_number,
+    SUM(po_line_spend_usd) AS po_spend_usd,
+    SUM(unputaway_dock_backlog_units) AS po_unputaway_backlog_units,
+    LOGICAL_AND(line_is_otif) AS po_is_otif
+  FROM po_line_eval
+  GROUP BY vendor_id, po_number
+),
+vendor_summary AS (
+  SELECT
+    v.vendor_id,
+    v.vendor_name,
+    v.vendor_tier,
+    v.category_focus,
+    COUNT(pe.po_number) AS closed_po_count,
+    COUNTIF(pe.po_is_otif) AS otif_po_count,
+    ROUND(100.0 * COUNTIF(pe.po_is_otif) / NULLIF(COUNT(pe.po_number), 0), 2) AS vendor_otif_tier1_pct,
+    ROUND(SUM(pe.po_spend_usd), 2) AS total_po_spend_usd,
+    ROUND(SUM(pe.po_unputaway_backlog_units), 2) AS unputaway_dock_backlog_units
+  FROM `scm_sap_s4_mm.sap_s4_mm_vendors` AS v
+  INNER JOIN po_eval AS pe
+    ON v.vendor_id = pe.vendor_id
+  WHERE v.active_flag = TRUE
+    AND v.vendor_tier = 'TIER_1'
+  GROUP BY v.vendor_id, v.vendor_name, v.vendor_tier, v.category_focus
+)
+SELECT
+  vs.*,
+  -- Chargeback schedule per configs/governance_sla_policy.yaml:
+  -- Minimum period PO spend >= $50,000 USD required; <85% OTIF => 5%, 85%-<95% => 2%, >=95% => 0%
+  CASE
+    WHEN vs.total_po_spend_usd < 50000.0 THEN 0.0
+    WHEN vs.vendor_otif_tier1_pct < 85.0 THEN 0.05
+    WHEN vs.vendor_otif_tier1_pct < 95.0 THEN 0.02
+    ELSE 0.0
+  END AS sla_chargeback_rate,
+  ROUND(
+    vs.total_po_spend_usd * CASE
+      WHEN vs.total_po_spend_usd < 50000.0 THEN 0.0
+      WHEN vs.vendor_otif_tier1_pct < 85.0 THEN 0.05
+      WHEN vs.vendor_otif_tier1_pct < 95.0 THEN 0.02
+      ELSE 0.0
+    END,
+    2
+  ) AS sla_chargeback_exposure_usd
+FROM vendor_summary AS vs

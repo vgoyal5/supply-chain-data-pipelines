@@ -1,0 +1,18 @@
+raw_hauler_name,canonical_carrier_name,scac_code,contract_tier
+JB HUNT,JB Hunt,JBHU,PRIMARY_NATIONAL
+JB Hunt,JB Hunt,JBHU,PRIMARY_NATIONAL
+jb hunt,JB Hunt,JBHU,PRIMARY_NATIONAL
+JBH,JB Hunt,JBHU,PRIMARY_NATIONAL
+SWIFT TRANSPORT,Swift Transport,SWFT,PRIMARY_NATIONAL
+Swift Transport,Swift Transport,SWFT,PRIMARY_NATIONAL
+swift trans,Swift Transport,SWFT,PRIMARY_NATIONAL
+swift trns,Swift Transport,SWFT,PRIMARY_NATIONAL
+WERNER ENTERPRISE,Werner Enterprise,WERN,PRIMARY_NATIONAL
+Werner Enterprise,Werner Enterprise,WERN,PRIMARY_NATIONAL
+werner ent,Werner Enterprise,WERN,PRIMARY_NATIONAL
+SCHNEIDER,Schneider National,SCNN,DEDICATED_FLEET
+Schneider National,Schneider National,SCNN,DEDICATED_FLEET
+schneider natl,Schneider National,SCNN,DEDICATED_FLEET
+FEDEX FREIGHT,FedEx Freight,FXFE,EXPEDITED_LTL
+FedEx Freight,FedEx Freight,FXFE,EXPEDITED_LTL
+fedex frt,FedEx Freight,FXFE,EXPEDITED_LTL

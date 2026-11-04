@@ -1,0 +1,10 @@
+{
+  "defaultSchema": "scm_analytics_marts",
+  "assertionSchema": "scm_data_quality",
+  "warehouse": "bigquery",
+  "defaultLocation": "us-central1",
+  "vars": {
+    "sap_dataset": "scm_sap_s4_mm",
+    "wmos_dataset": "scm_manh_wmos"
+  }
+}

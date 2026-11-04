@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "northstar-supply-chain-pipelines"
+version = "2.4.0"
+description = "SAP S/4HANA MM and Manhattan WMOS BigQuery ETL & KPI normalization pipelines"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+dependencies = [
+  "google-cloud-bigquery>=3.20.0",
+  "pydantic>=2.7.0",
+  "pyyaml>=6.0.1",
+]
+
+[project.scripts]
+scm-wmos-inbound-etl = "pipelines.wmos_inbound_etl:build_normalized_receipts_sql"
+scm-ledger-sync = "pipelines.inventory_ledger_sync:build_normalized_ledger_sql"

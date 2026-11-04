@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package northstar.scm.wmos.v1;
+
+// Wire schema ingested from Manhattan WMOS dock RF scanners into
+// BigQuery table `scm_manh_wmos.manh_wmos_inbound_receipts`.
+message InboundDockScanEvent {
+  // Warehouse receipt identifier (e.g. "RCP-80001").
+  // Shift-handoff sync retries emit duplicate events sharing the same receipt_id;
+  // analytical consumers MUST keep only the latest received_at per receipt_id.
+  string receipt_id = 1;
+
+  // SAP S/4HANA purchase order number joining to `scm_sap_s4_mm.sap_s4_mm_purchase_orders.po_number`.
+  string po_number = 2;
+
+  // Manhattan WMOS item identifier (e.g. "ITM-50001"). Maps to `manh_wmos_products.itemNbr`
+  // (NOT directly joinable to `sap_s4_mm_po_lines.sku_id`; bridge via `manh_wmos_products.skuId`).
+  string item_nbr = 3;
+
+  string dc_id = 4;
+
+  // Prior to 2024-03-25 UTC, legacy EDI 856 parser v1.7 populated received_qty
+  // and damaged_qty in centi-units (100x sellable eaches). From 2024-03-25 UTC,
+  // values represent sellable eaches (1x).
+  double received_qty = 5;
+  double damaged_qty = 6;
+
+  string received_at_rfc3339 = 7;
+  string dock_door = 8;
+  string status = 9;
+  string hauler_name = 10;
+  string inspection_status = 11;
+}
